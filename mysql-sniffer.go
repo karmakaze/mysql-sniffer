@@ -26,7 +26,6 @@ import (
 	_ "github.com/davecgh/go-spew/spew"
 	"log"
 	"math/rand"
-	"sort"
 	"strings"
 	"time"
 )
@@ -227,26 +226,14 @@ func handleStatusUpdate(displaycount int, sortby string, cutoff int) {
 			continue
 		}
 
-		qmin, qavg, qmax := calculateTimes(&c.times)
 		bavg := uint64(float64(c.bytes) / float64(c.count))
 
 		sorted := float64(c.count)
-		if sortby == "avg" {
-			sorted = qavg
-		} else if sortby == "max" {
-			sorted = qmax
-		} else if sortby == "maxbytes" {
-			sorted = float64(c.bytes)
-		} else if sortby == "avgbytes" {
-			sorted = float64(bavg)
-		}
-
 		tmp = append(tmp, sortable{sorted, fmt.Sprintf(
 			"%s%6d  %s%7.2f/s  %s%6.2f %6.2f %6.2f  %s%9db %6db %s%s%s",
-			COLOR_YELLOW, c.count, COLOR_CYAN, qps, COLOR_YELLOW, qmin, qavg, qmax,
+			COLOR_YELLOW, c.count, COLOR_CYAN, qps, COLOR_YELLOW, 0, 0, 0,
 			COLOR_GREEN, c.bytes, bavg, COLOR_WHITE, q, COLOR_DEFAULT)})
 	}
-	sort.Sort(tmp)
 
 	// now print top to bottom, since our sorted list is sorted backwards
 	// from what we want
@@ -335,7 +322,7 @@ func processPacket(rs *source, request bool, data []byte) {
 		rs.reqSent = nil
 
 		// If we're in verbose mode, just dump statistics from this one.
-		if verbose && len(rs.qtext) > 0 {
+		if false && verbose && len(rs.qtext) > 0 {
 			log.Printf("    %s%s %s## %sbytes: %d time: %0.2f%s\n", COLOR_GREEN, rs.qtext, COLOR_RED,
 				COLOR_YELLOW, rs.qbytes, float64(reqtime)/1000000, COLOR_DEFAULT)
 		}
@@ -353,7 +340,7 @@ func processPacket(rs *source, request bool, data []byte) {
 
 	// Convert this request into whatever format the user wants.
 	querycount++
-	var text string
+	var text, query string
 
 	for _, item := range format {
 		switch item.(type) {
@@ -363,10 +350,12 @@ func processPacket(rs *source, request bool, data []byte) {
 				log.Fatalf("F_NONE in format string")
 			case F_QUERY:
 				if dirty {
-					text += string(pdata)
+					query = string(pdata)
 				} else {
-					text += cleanupQuery(pdata)
+					query = cleanupQuery(pdata)
 				}
+				query = strings.Trim(query, "\n")
+				text += query
 			case F_ROUTE:
 				// Routes are in the query like:
 				//     SELECT /* hostname:route */ FROM ...
@@ -394,6 +383,12 @@ func processPacket(rs *source, request bool, data []byte) {
 			log.Fatalf("Unknown type in format string")
 		}
 	}
+
+	// If we're in verbose mode, print the requested query as it's received
+	if verbose && len(query) > 0 {
+		fmt.Println(text)
+	}
+
 	qdata, ok := qbuf[text]
 	if !ok {
 		qdata = &queryData{}
