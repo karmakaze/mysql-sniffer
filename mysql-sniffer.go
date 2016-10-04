@@ -79,7 +79,6 @@ type source struct {
 	reqSent   *time.Time
 	reqTimes  [TIME_BUCKETS]uint64
 	qbytes    uint64
-	qdata     *queryData
 	qtext     string
 }
 
@@ -90,7 +89,6 @@ type queryData struct {
 }
 
 var start int64 = UnixNow()
-var qbuf map[string]*queryData = make(map[string]*queryData)
 var querycount int
 var verbose bool = false
 var noclean bool = false
@@ -116,13 +114,9 @@ func main() {
 	var lport *int = flag.Int("P", 3306, "MySQL port to use")
 	var eth *string = flag.String("i", "eth0", "Interface to sniff")
 	var ldirty *bool = flag.Bool("u", false, "Unsanitized -- do not canonicalize queries")
-	var period *int = flag.Int("t", 10, "Seconds between outputting status")
-	var displaycount *int = flag.Int("d", 15, "Display this many queries in status updates")
 	var doverbose *bool = flag.Bool("v", false, "Print every query received (spammy)")
 	var nocleanquery *bool = flag.Bool("n", false, "no clean queries")
 	var formatstr *string = flag.String("f", "#s:#q", "Format for output aggregation")
-	var sortby *string = flag.String("s", "count", "Sort by: count, max, avg, maxbytes, avgbytes")
-	var cutoff *int = flag.Int("c", 0, "Only show queries over count/second")
 	flag.Parse()
 
 	verbose = *doverbose
@@ -150,21 +144,12 @@ func main() {
 		log.Fatalf("Failed to set port filter: %s", err.Error())
 	}
 
-	last := UnixNow()
 	var pkt *pcap.Packet = nil
 	var rv int32 = 0
 
 	for rv = 0; rv >= 0; {
 		for pkt, rv = iface.NextEx(); pkt != nil; pkt, rv = iface.NextEx() {
 			handlePacket(pkt)
-
-			// simple output printer... this should be super fast since we expect that a
-			// system like this will have relatively few unique queries once they're
-			// canonicalized.
-			if !verbose && querycount%1000 == 0 && last < UnixNow()-int64(*period) {
-				last = UnixNow()
-				handleStatusUpdate(*displaycount, *sortby, *cutoff)
-			}
 		}
 	}
 }
@@ -193,55 +178,6 @@ func calculateTimes(timings *[TIME_BUCKETS]uint64) (fmin, favg, fmax float64) {
 	}
 	return float64(min) / 1000000, float64(avg) / 1000000,
 		float64(max) / 1000000
-}
-
-func handleStatusUpdate(displaycount int, sortby string, cutoff int) {
-	elapsed := float64(UnixNow() - start)
-
-	// print status bar
-	log.Printf("\n")
-	log.SetFlags(log.Ldate | log.Ltime)
-	log.Printf("%s%d total queries, %0.2f per second%s", COLOR_RED, querycount,
-		float64(querycount)/elapsed, COLOR_DEFAULT)
-	log.SetFlags(0)
-
-	log.Printf("%d packets (%0.2f%% on synchronized streams) / %d desyncs / %d streams",
-		stats.packets.rcvd, float64(stats.packets.rcvd_sync)/float64(stats.packets.rcvd)*100,
-		stats.desyncs, stats.streams)
-
-	// global timing values
-	gmin, gavg, gmax := calculateTimes(&times)
-	log.Printf("%0.2fms min / %0.2fms avg / %0.2fms max query times", gmin, gavg, gmax)
-	log.Printf("%d unique results in this filter", len(qbuf))
-	log.Printf(" ")
-	log.Printf("%s count     %sqps     %s  min    avg   max      %sbytes      per qry%s",
-		COLOR_YELLOW, COLOR_CYAN, COLOR_YELLOW, COLOR_GREEN, COLOR_DEFAULT)
-
-	// we cheat so badly here...
-	var tmp sortableSlice = make(sortableSlice, 0, len(qbuf))
-	for q, c := range qbuf {
-		qps := float64(c.count) / elapsed
-		if qps < float64(cutoff) {
-			continue
-		}
-
-		bavg := uint64(float64(c.bytes) / float64(c.count))
-
-		sorted := float64(c.count)
-		tmp = append(tmp, sortable{sorted, fmt.Sprintf(
-			"%s%6d  %s%7.2f/s  %s%6.2f %6.2f %6.2f  %s%9db %6db %s%s%s",
-			COLOR_YELLOW, c.count, COLOR_CYAN, qps, COLOR_YELLOW, 0, 0, 0,
-			COLOR_GREEN, c.bytes, bavg, COLOR_WHITE, q, COLOR_DEFAULT)})
-	}
-
-	// now print top to bottom, since our sorted list is sorted backwards
-	// from what we want
-	if len(tmp) < displaycount {
-		displaycount = len(tmp)
-	}
-	for i := 1; i <= displaycount; i++ {
-		log.Printf(tmp[len(tmp)-i].line)
-	}
 }
 
 // Do something with a packet for a source.
@@ -300,9 +236,6 @@ func processPacket(rs *source, request bool, data []byte) {
 		// Keep adding the bytes we're getting, since this is probably still part of
 		// an earlier response
 		if rs.reqSent == nil {
-			if rs.qdata != nil {
-				rs.qdata.bytes += plen
-			}
 			return
 		}
 		reqtime = uint64(time.Since(*rs.reqSent).Nanoseconds())
@@ -311,13 +244,6 @@ func processPacket(rs *source, request bool, data []byte) {
 		randn := rand.Intn(TIME_BUCKETS)
 		rs.reqTimes[randn] = reqtime
 		times[randn] = reqtime
-		if rs.qdata != nil {
-			// This should never fail but it has. Probably because of a
-			// race condition I need to suss out, or sharing between
-			// two different goroutines. :(
-			rs.qdata.times[randn] = reqtime
-			rs.qdata.bytes += plen
-		}
 		rs.reqSent = nil
 
 		// If we're in verbose mode, just dump statistics from this one.
@@ -388,14 +314,7 @@ func processPacket(rs *source, request bool, data []byte) {
 		fmt.Println(text)
 	}
 
-	qdata, ok := qbuf[text]
-	if !ok {
-		qdata = &queryData{}
-		qbuf[text] = qdata
-	}
-	qdata.count++
-	qdata.bytes += plen
-	rs.qtext, rs.qdata, rs.qbytes = text, qdata, plen
+	rs.qtext, rs.qbytes = text, plen
 }
 
 // carvePacket tries to pull a packet out of a slice of bytes. If so, it removes
