@@ -37,9 +37,6 @@ const (
 	TOKEN_WHITESPACE = 3
 	TOKEN_OTHER      = 4
 
-	// Internal tuning
-	TIME_BUCKETS = 10000
-
 	// ANSI colors
 	COLOR_RED     = "\x1b[31m"
 	COLOR_GREEN   = "\x1b[32m"
@@ -71,7 +68,6 @@ type source struct {
 	reqbuffer []byte
 	resbuffer []byte
 	reqSent   *time.Time
-	reqTimes  [TIME_BUCKETS]uint64
 	qbytes    uint64
 	qtext     string
 }
@@ -79,7 +75,6 @@ type source struct {
 type queryData struct {
 	count uint64
 	bytes uint64
-	times [TIME_BUCKETS]uint64
 }
 
 var querycount int
@@ -88,7 +83,6 @@ var noclean bool = false
 var dirty bool = false
 var format []interface{}
 var port uint16
-var times [TIME_BUCKETS]uint64
 
 var stats struct {
 	packets struct {
@@ -204,10 +198,6 @@ func processPacket(rs *source, request bool, data []byte) {
 		}
 		reqtime = uint64(time.Since(*rs.reqSent).Nanoseconds())
 
-		// We keep track of per-source, global, and per-query timings.
-		randn := rand.Intn(TIME_BUCKETS)
-		rs.reqTimes[randn] = reqtime
-		times[randn] = reqtime
 		rs.reqSent = nil
 
 		// If we're in verbose mode, just dump statistics from this one.
