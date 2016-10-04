@@ -67,7 +67,7 @@ type source struct {
 	synced    bool
 	reqbuffer []byte
 	resbuffer []byte
-	reqSent   *time.Time
+	reqSent   time.Time
 	qbytes    uint64
 	qtext     string
 }
@@ -80,8 +80,6 @@ type queryData struct {
 var querycount int
 var verbose bool = false
 var noclean bool = false
-var dirty bool = false
-var format []interface{}
 var port uint16
 
 var stats struct {
@@ -97,17 +95,14 @@ var stats struct {
 func main() {
 	var lport *int = flag.Int("P", 3306, "MySQL port to use")
 	var eth *string = flag.String("i", "eth0", "Interface to sniff")
-	var ldirty *bool = flag.Bool("u", false, "Unsanitized -- do not canonicalize queries")
 	var doverbose *bool = flag.Bool("v", false, "Print every query received (spammy)")
 	var nocleanquery *bool = flag.Bool("n", false, "no clean queries")
-	var formatstr *string = flag.String("f", "#s:#q", "Format for output aggregation")
 	flag.Parse()
 
 	verbose = *doverbose
 	noclean = *nocleanquery
 	port = uint16(*lport)
-	dirty = *ldirty
-	parseFormat(*formatstr)
+
 	rand.Seed(time.Now().UnixNano())
 
 	log.SetPrefix("")
@@ -193,12 +188,12 @@ func processPacket(rs *source, request bool, data []byte) {
 	if !request {
 		// Keep adding the bytes we're getting, since this is probably still part of
 		// an earlier response
-		if rs.reqSent == nil {
+		if rs.reqSent.IsZero() {
 			return
 		}
-		reqtime = uint64(time.Since(*rs.reqSent).Nanoseconds())
+		reqtime = uint64(time.Since(rs.reqSent).Nanoseconds())
 
-		rs.reqSent = nil
+		rs.reqSent = time.Time{}
 
 		// If we're in verbose mode, just dump statistics from this one.
 		if false && verbose && len(rs.qtext) > 0 {
@@ -210,58 +205,20 @@ func processPacket(rs *source, request bool, data []byte) {
 	}
 
 	// This is for sure a request, so let's count it as one.
-	if rs.reqSent != nil {
+	if !rs.reqSent.IsZero() {
 		//			log.Printf("[%s] ...sending two requests without a response?",
 		//				rs.src)
 	}
 	tnow := time.Now()
-	rs.reqSent = &tnow
+	rs.reqSent = tnow
 
 	// Convert this request into whatever format the user wants.
 	querycount++
-	var text, query string
 
-	for _, item := range format {
-		switch item.(type) {
-		case int:
-			switch item.(int) {
-			case F_NONE:
-				log.Fatalf("F_NONE in format string")
-			case F_QUERY:
-				if dirty {
-					query = string(pdata)
-				} else {
-					query = cleanupQuery(pdata)
-				}
-				query = strings.Trim(query, "\n")
-				text += query
-			case F_ROUTE:
-				// Routes are in the query like:
-				//     SELECT /* hostname:route */ FROM ...
-				// We remove the hostname so routes can be condensed.
-				parts := strings.SplitN(string(pdata), " ", 5)
-				if len(parts) >= 4 && parts[1] == "/*" && parts[3] == "*/" {
-					if strings.Contains(parts[2], ":") {
-						text += strings.SplitN(parts[2], ":", 2)[1]
-					} else {
-						text += parts[2]
-					}
-				} else {
-					text += "(unknown) " + cleanupQuery(pdata)
-				}
-			case F_SOURCE:
-				text += rs.src
-			case F_SOURCEIP:
-				text += rs.srcip
-			default:
-				log.Fatalf("Unknown F_XXXXXX int in format string")
-			}
-		case string:
-			text += item.(string)
-		default:
-			log.Fatalf("Unknown type in format string")
-		}
-	}
+	query := string(pdata)
+	query = strings.Trim(query, "\n")
+
+	text := rs.src +":"+ query
 
 	// If we're in verbose mode, print the requested query as it's received
 	if verbose && len(query) > 0 {
@@ -469,60 +426,4 @@ func cleanupQuery(query []byte) string {
 	}
 
 	return strings.Replace(tmp, "?, ", "", -1)
-}
-
-// parseFormat takes a string and parses it out into the given format slice
-// that we later use to build up a string. This might actually be an overcomplicated
-// solution?
-func parseFormat(formatstr string) {
-	formatstr = strings.TrimSpace(formatstr)
-	if formatstr == "" {
-		formatstr = "#b:#k"
-	}
-
-	is_special := false
-	curstr := ""
-	do_append := F_NONE
-	for _, char := range formatstr {
-		if char == '#' {
-			if is_special {
-				curstr += string(char)
-				is_special = false
-			} else {
-				is_special = true
-			}
-			continue
-		}
-
-		if is_special {
-			switch strings.ToLower(string(char)) {
-			case "s":
-				do_append = F_SOURCE
-			case "i":
-				do_append = F_SOURCEIP
-			case "r":
-				do_append = F_ROUTE
-			case "q":
-				do_append = F_QUERY
-			default:
-				curstr += "#" + string(char)
-			}
-			is_special = false
-		} else {
-			curstr += string(char)
-		}
-
-		if do_append != F_NONE {
-			if curstr != "" {
-				format = append(format, curstr, do_append)
-				curstr = ""
-			} else {
-				format = append(format, do_append)
-			}
-			do_append = F_NONE
-		}
-	}
-	if curstr != "" {
-		format = append(format, curstr)
-	}
 }
