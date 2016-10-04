@@ -92,7 +92,6 @@ type queryData struct {
 var start int64 = UnixNow()
 var qbuf map[string]*queryData = make(map[string]*queryData)
 var querycount int
-var chmap map[string]*source = make(map[string]*source)
 var verbose bool = false
 var noclean bool = false
 var dirty bool = false
@@ -474,13 +473,10 @@ func handlePacket(pkt *pcap.Packet) {
 	}
 
 	// Get the data structure for this source, then do something.
-	rs, ok := chmap[src]
-	if !ok {
-		srcip := src[0:strings.Index(src, ":")]
-		rs = &source{src: src, srcip: srcip, synced: false}
-		stats.streams++
-		chmap[src] = rs
-	}
+
+	srcip := src[0:strings.Index(src, ":")]
+	rs := &source{src: src, srcip: srcip, synced: false}
+	stats.streams++
 
 	// Now with a source, process the packet.
 	processPacket(rs, request, pkt.Data[pos:])
