@@ -64,12 +64,6 @@ type packet struct {
 	data    []byte
 }
 
-type sortable struct {
-	value float64
-	line  string
-}
-type sortableSlice []sortable
-
 type source struct {
 	src       string
 	srcip     string
@@ -88,7 +82,6 @@ type queryData struct {
 	times [TIME_BUCKETS]uint64
 }
 
-var start int64 = UnixNow()
 var querycount int
 var verbose bool = false
 var noclean bool = false
@@ -106,9 +99,6 @@ var stats struct {
 	streams uint64
 }
 
-func UnixNow() int64 {
-	return time.Now().Unix()
-}
 
 func main() {
 	var lport *int = flag.Int("P", 3306, "MySQL port to use")
@@ -152,32 +142,6 @@ func main() {
 			handlePacket(pkt)
 		}
 	}
-}
-
-func calculateTimes(timings *[TIME_BUCKETS]uint64) (fmin, favg, fmax float64) {
-	var counts, total, min, max, avg uint64 = 0, 0, 0, 0, 0
-	has_min := false
-	for _, val := range *timings {
-		if val == 0 {
-			// Queries should never take 0 nanoseconds. We are using 0 as a
-			// trigger to mean 'uninitialized reading'.
-			continue
-		}
-		if val < min || !has_min {
-			has_min = true
-			min = val
-		}
-		if val > max {
-			max = val
-		}
-		counts++
-		total += val
-	}
-	if counts > 0 {
-		avg = total / counts // integer division
-	}
-	return float64(min) / 1000000, float64(avg) / 1000000,
-		float64(max) / 1000000
 }
 
 // Do something with a packet for a source.
@@ -571,16 +535,4 @@ func parseFormat(formatstr string) {
 	if curstr != "" {
 		format = append(format, curstr)
 	}
-}
-
-func (self sortableSlice) Len() int {
-	return len(self)
-}
-
-func (self sortableSlice) Less(i, j int) bool {
-	return self[i].value < self[j].value
-}
-
-func (self sortableSlice) Swap(i, j int) {
-	self[i], self[j] = self[j], self[i]
 }
